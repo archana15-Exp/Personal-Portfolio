@@ -1,0 +1,13 @@
+.canvasMount {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+  mix-blend-mode: screen;
+}
+
+.canvasMount :global(canvas) {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
