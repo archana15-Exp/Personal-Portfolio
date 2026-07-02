@@ -8,6 +8,9 @@ import styles from "./VideoIntro.module.css";
 
 const VIDEO_SRC = "/video/hero-talking.mp4";
 const SOUND_HINT_TIMEOUT = 5000;
+// The clip plays through 3 times back-to-back, then stops itself on the
+// last frame instead of looping forever.
+const PLAY_LIMIT = 3;
 
 function PlayIcon() {
   return (
@@ -53,8 +56,13 @@ export default function VideoIntro() {
   const bgVideoRef = useRef(null);
   const hintTimeoutRef = useRef(null);
   // Tracks whether the current pause was a deliberate user action (via the
-  // control button) so the scroll observer below doesn't auto-resume it.
+  // control button, or the play-count limit below) so the scroll observer
+  // further down doesn't auto-resume it.
   const userPausedRef = useRef(false);
+  // Counts how many times the clip has played through since it last started
+  // a fresh cycle, so we can stop it after PLAY_LIMIT loops instead of
+  // looping forever.
+  const playCountRef = useRef(0);
 
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(true);
@@ -80,6 +88,19 @@ export default function VideoIntro() {
     return () => ctx.revert();
   }, []);
 
+  // Belt-and-braces: explicitly kick off playback on mount. The `autoPlay`
+  // attribute usually handles this, but React-mounted <video> elements
+  // don't always honor it reliably on first paint (particularly on
+  // Safari/iOS), which can leave the clip sitting on its first frame until
+  // some unrelated interaction (like tapping the sound button) happens to
+  // nudge it. Calling .play() directly guarantees it starts as soon as the
+  // page loads — it stays muted at this point, so it's always allowed.
+  useEffect(() => {
+    [bgVideoRef.current, fgVideoRef.current].forEach((video) => {
+      if (video) video.play().catch(() => {});
+    });
+  }, []);
+
   // Auto-hide the "tap for sound" hint after a few seconds.
   useEffect(() => {
     if (!showSoundHint) return undefined;
@@ -90,42 +111,93 @@ export default function VideoIntro() {
   }, [showSoundHint]);
 
   // Keep the clip looping (no more freeze-frame at the end) while the hero
-  // is in view, and pause it as soon as the user scrolls down into the
-  // skills/showcase section — it resumes if they scroll back up, unless
-  // they'd manually paused it themselves.
+  // is in view, and pause it once the user has scrolled down far enough
+  // that the skills/showcase section dominates the screen — it resumes if
+  // they scroll back up, unless they'd manually paused it themselves.
+  //
+  // Note: we check the intersection *ratio* against a cutoff rather than
+  // the binary `isIntersecting` flag. `isIntersecting` only turns false
+  // once the hero is 100% scrolled out of view — but the next section is
+  // barely taller than one viewport, so that 100% point sits almost at the
+  // very bottom of the whole page. Using a ratio cutoff instead means the
+  // video pauses as soon as the hero stops being the dominant content,
+  // which is what "landing on the skills page" actually looks like.
   useEffect(() => {
     const heroEl = sectionRef.current;
     if (!heroEl || typeof IntersectionObserver === "undefined") {
       return undefined;
     }
 
+    const VISIBLE_CUTOFF = 0.5;
+    // Remembers the last play/pause decision so we only ever call
+    // video.play()/pause() when it actually changes. Without this, every
+    // threshold crossing (there are 21 of them) re-issues play()/pause()
+    // even while the decision stays the same, and firing overlapping calls
+    // on two separate <video> elements back-to-back can desync them (one
+    // element's play() promise can lose the race against a later pause()).
+    let lastDecision = null;
+
     const observer = new IntersectionObserver(
       ([entry]) => {
+        const mostlyVisible = entry.intersectionRatio >= VISIBLE_CUTOFF;
+        const shouldPlay = mostlyVisible && !userPausedRef.current;
+        if (shouldPlay === lastDecision) return;
+        lastDecision = shouldPlay;
+
         const videos = [fgVideoRef.current, bgVideoRef.current];
-        if (entry.isIntersecting) {
-          if (userPausedRef.current) return;
+        if (shouldPlay) {
           videos.forEach((video) => video && video.play().catch(() => {}));
-          setIsPlaying(true);
         } else {
           videos.forEach((video) => video && video.pause());
-          setIsPlaying(false);
         }
+        setIsPlaying(shouldPlay);
       },
-      { threshold: 0 }
+      { threshold: Array.from({ length: 21 }, (_, i) => i / 20) }
     );
 
     observer.observe(heroEl);
     return () => observer.disconnect();
   }, []);
 
+  // Fires when the foreground video finishes a playthrough (the two videos
+  // share the same source and start together, so driving the cycle from just
+  // one of them avoids double-counting). Below the limit, both videos are
+  // rewound and replayed together; once the limit is hit, both are paused on
+  // their last frame and marked as a "user pause" so the scroll observer
+  // won't resurrect it.
+  function handleEnded() {
+    playCountRef.current += 1;
+    const videos = [fgVideoRef.current, bgVideoRef.current];
+    if (playCountRef.current < PLAY_LIMIT) {
+      videos.forEach((video) => {
+        if (!video) return;
+        video.currentTime = 0;
+        video.play().catch(() => {});
+      });
+    } else {
+      userPausedRef.current = true;
+      setIsPlaying(false);
+      videos.forEach((video) => video && video.pause());
+    }
+  }
+
   function togglePlay() {
     const next = !isPlaying;
     userPausedRef.current = !next;
     setIsPlaying(next);
+    // If the clip had already run through its play limit, clicking play
+    // again starts a brand-new 3-loop cycle from the top.
+    if (next && playCountRef.current >= PLAY_LIMIT) {
+      playCountRef.current = 0;
+    }
     [fgVideoRef.current, bgVideoRef.current].forEach((video) => {
       if (!video) return;
-      if (next) video.play().catch(() => {});
-      else video.pause();
+      if (next) {
+        if (video.ended) video.currentTime = 0;
+        video.play().catch(() => {});
+      } else {
+        video.pause();
+      }
     });
   }
 
@@ -152,7 +224,6 @@ export default function VideoIntro() {
           className={styles.bgVideo}
           src={VIDEO_SRC}
           autoPlay
-          loop
           muted
           playsInline
         />
@@ -164,9 +235,9 @@ export default function VideoIntro() {
           className={styles.fgVideo}
           src={VIDEO_SRC}
           autoPlay
-          loop
           muted={isMuted}
           playsInline
+          onEnded={handleEnded}
         />
       </div>
 
