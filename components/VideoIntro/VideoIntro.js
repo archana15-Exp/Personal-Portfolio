@@ -92,22 +92,36 @@ export default function VideoIntro() {
     setIsPlaying(next);
     [fgVideoRef.current, bgVideoRef.current].forEach((video) => {
       if (!video) return;
-      if (next) video.play().catch(() => {});
-      else video.pause();
+      if (next) {
+        // If the clip already finished, restart it from the beginning
+        // instead of re-firing "ended" immediately.
+        if (video.ended) video.currentTime = 0;
+        video.play().catch(() => {});
+      } else {
+        video.pause();
+      }
     });
   }
 
+  // Only the foreground video ever carries audio — the background copy is a
+  // purely decorative blurred duplicate and must stay muted at all times.
+  // Unmuting both was causing two slightly-out-of-sync copies of the same
+  // audio track to play at once, which is what produced the echo.
   function toggleMute() {
     const next = !isMuted;
     setIsMuted(next);
-    [fgVideoRef.current, bgVideoRef.current].forEach((video) => {
-      if (video) video.muted = next;
-    });
+    if (fgVideoRef.current) fgVideoRef.current.muted = next;
     if (!next) setShowSoundHint(false);
   }
 
   function handleUnmuteFromHint() {
     toggleMute();
+  }
+
+  // Once the clip finishes, reflect the stopped state in the play/pause
+  // control instead of relying on `loop` to keep it going.
+  function handleEnded() {
+    setIsPlaying(false);
   }
 
   return (
@@ -118,7 +132,6 @@ export default function VideoIntro() {
           className={styles.bgVideo}
           src={VIDEO_SRC}
           autoPlay
-          loop
           muted
           playsInline
         />
@@ -130,9 +143,9 @@ export default function VideoIntro() {
           className={styles.fgVideo}
           src={VIDEO_SRC}
           autoPlay
-          loop
           muted={isMuted}
           playsInline
+          onEnded={handleEnded}
         />
       </div>
 
