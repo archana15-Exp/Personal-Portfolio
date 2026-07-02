@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import gsap from "gsap";
-import CinematicLayer from "../CinematicLayer/CinematicLayer";
 import HeroContent from "../HeroContent/HeroContent";
 import ScrollIndicator from "../ScrollIndicator/ScrollIndicator";
 import styles from "./VideoIntro.module.css";
@@ -45,14 +44,17 @@ function UnmutedIcon() {
 /**
  * Fullscreen sticky cinematic hero. Pairs a sharp foreground video with a
  * blurred, cover-fit duplicate as an ambient background layer so the frame
- * never letterboxes, then layers gradients, a Three.js bokeh field, and the
- * animated portfolio copy on top.
+ * never letterboxes, then layers gradients and the animated portfolio copy
+ * on top.
  */
 export default function VideoIntro() {
   const sectionRef = useRef(null);
   const fgVideoRef = useRef(null);
   const bgVideoRef = useRef(null);
   const hintTimeoutRef = useRef(null);
+  // Tracks whether the current pause was a deliberate user action (via the
+  // control button) so the scroll observer below doesn't auto-resume it.
+  const userPausedRef = useRef(false);
 
   const [isPlaying, setIsPlaying] = useState(true);
   const [isMuted, setIsMuted] = useState(true);
@@ -87,19 +89,43 @@ export default function VideoIntro() {
     return () => clearTimeout(hintTimeoutRef.current);
   }, [showSoundHint]);
 
+  // Keep the clip looping (no more freeze-frame at the end) while the hero
+  // is in view, and pause it as soon as the user scrolls down into the
+  // skills/showcase section — it resumes if they scroll back up, unless
+  // they'd manually paused it themselves.
+  useEffect(() => {
+    const heroEl = sectionRef.current;
+    if (!heroEl || typeof IntersectionObserver === "undefined") {
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const videos = [fgVideoRef.current, bgVideoRef.current];
+        if (entry.isIntersecting) {
+          if (userPausedRef.current) return;
+          videos.forEach((video) => video && video.play().catch(() => {}));
+          setIsPlaying(true);
+        } else {
+          videos.forEach((video) => video && video.pause());
+          setIsPlaying(false);
+        }
+      },
+      { threshold: 0 }
+    );
+
+    observer.observe(heroEl);
+    return () => observer.disconnect();
+  }, []);
+
   function togglePlay() {
     const next = !isPlaying;
+    userPausedRef.current = !next;
     setIsPlaying(next);
     [fgVideoRef.current, bgVideoRef.current].forEach((video) => {
       if (!video) return;
-      if (next) {
-        // If the clip already finished, restart it from the beginning
-        // instead of re-firing "ended" immediately.
-        if (video.ended) video.currentTime = 0;
-        video.play().catch(() => {});
-      } else {
-        video.pause();
-      }
+      if (next) video.play().catch(() => {});
+      else video.pause();
     });
   }
 
@@ -118,12 +144,6 @@ export default function VideoIntro() {
     toggleMute();
   }
 
-  // Once the clip finishes, reflect the stopped state in the play/pause
-  // control instead of relying on `loop` to keep it going.
-  function handleEnded() {
-    setIsPlaying(false);
-  }
-
   return (
     <section ref={sectionRef} className={styles.hero}>
       <div className={styles.bgLayer} aria-hidden="true">
@@ -132,6 +152,7 @@ export default function VideoIntro() {
           className={styles.bgVideo}
           src={VIDEO_SRC}
           autoPlay
+          loop
           muted
           playsInline
         />
@@ -143,17 +164,15 @@ export default function VideoIntro() {
           className={styles.fgVideo}
           src={VIDEO_SRC}
           autoPlay
+          loop
           muted={isMuted}
           playsInline
-          onEnded={handleEnded}
         />
       </div>
 
       <div className={styles.gradientTop} aria-hidden="true" />
       <div className={styles.gradientBottom} aria-hidden="true" />
       <div className={styles.vignette} aria-hidden="true" />
-
-      <CinematicLayer />
 
       <div className={styles.contentLayer}>
         <HeroContent />
