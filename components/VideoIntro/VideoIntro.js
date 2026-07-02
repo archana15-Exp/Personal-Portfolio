@@ -95,9 +95,20 @@ export default function VideoIntro() {
   // some unrelated interaction (like tapping the sound button) happens to
   // nudge it. Calling .play() directly guarantees it starts as soon as the
   // page loads — it stays muted at this point, so it's always allowed.
+  //
+  // We also force the `muted` DOM property to true here rather than relying
+  // solely on the JSX attribute. On a server-rendered page (Next.js), React
+  // can hydrate a <video> element without actually syncing the live `muted`
+  // IDL property to match the attribute in the markup — the element then
+  // looks muted in the HTML but reports `muted === false` in JS. Browsers
+  // treat that as an attempt at audible autoplay and silently block it
+  // (the rejected play() promise is swallowed by .catch below), which is
+  // what left the clip frozen on frame one instead of autoplaying.
   useEffect(() => {
     [bgVideoRef.current, fgVideoRef.current].forEach((video) => {
-      if (video) video.play().catch(() => {});
+      if (!video) return;
+      video.muted = true;
+      video.play().catch(() => {});
     });
   }, []);
 
